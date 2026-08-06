@@ -3,8 +3,11 @@
 import { Buffer } from "node:buffer";
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { GATEWAY_CLIENT_MODES } from "../../packages/gateway-protocol/src/client-info.js";
 import {
   MIN_CLIENT_PROTOCOL_VERSION,
+  MIN_NODE_PROTOCOL_VERSION,
+  MIN_PROBE_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
 } from "../../packages/gateway-protocol/src/index.js";
 import type { DeviceIdentity } from "../infra/device-identity.js";
@@ -1160,6 +1163,9 @@ describe("GatewayClient connect auth payload", () => {
       minProtocol?: number;
       maxProtocol?: number;
       scopes?: string[];
+      client?: {
+        mode?: string;
+      };
       auth?: {
         token?: string;
         bootstrapToken?: string;
@@ -1194,16 +1200,87 @@ describe("GatewayClient connect auth payload", () => {
     return parseConnectRequest(ws);
   }
 
-  it("advertises the default protocol compatibility range", () => {
-    const client = new GatewayClient({
-      url: "ws://127.0.0.1:18789",
-      deviceIdentity: null,
+  it.each([
+    {
+      name: "general clients",
+      options: {},
+      expectedMinProtocol: MIN_CLIENT_PROTOCOL_VERSION,
+      expectedMaxProtocol: PROTOCOL_VERSION,
+    },
+    {
+      name: "exact node clients",
+      options: { role: "node", mode: GATEWAY_CLIENT_MODES.NODE },
+      expectedMinProtocol: MIN_NODE_PROTOCOL_VERSION,
+      expectedMaxProtocol: PROTOCOL_VERSION,
+    },
+    {
+      name: "node role without node mode",
+      options: { role: "node" },
+      expectedMinProtocol: MIN_CLIENT_PROTOCOL_VERSION,
+      expectedMaxProtocol: PROTOCOL_VERSION,
+    },
+    {
+      name: "node mode without node role",
+      options: { mode: GATEWAY_CLIENT_MODES.NODE },
+      expectedMinProtocol: MIN_CLIENT_PROTOCOL_VERSION,
+      expectedMaxProtocol: PROTOCOL_VERSION,
+    },
+    {
+      name: "probe clients",
+      options: { mode: GATEWAY_CLIENT_MODES.PROBE },
+      expectedMinProtocol: MIN_PROBE_PROTOCOL_VERSION,
+      expectedMaxProtocol: PROTOCOL_VERSION,
+    },
+    {
+      name: "explicit node minimum overrides",
+      options: {
+        role: "node",
+        mode: GATEWAY_CLIENT_MODES.NODE,
+        minProtocol: PROTOCOL_VERSION,
+      },
+      expectedMinProtocol: PROTOCOL_VERSION,
+      expectedMaxProtocol: PROTOCOL_VERSION,
+    },
+    {
+      name: "explicit node maximum overrides",
+      options: {
+        role: "node",
+        mode: GATEWAY_CLIENT_MODES.NODE,
+        maxProtocol: MIN_NODE_PROTOCOL_VERSION,
+      },
+      expectedMinProtocol: MIN_NODE_PROTOCOL_VERSION,
+      expectedMaxProtocol: MIN_NODE_PROTOCOL_VERSION,
+    },
+  ])(
+    "advertises the protocol compatibility range for $name",
+    ({ options, expectedMinProtocol, expectedMaxProtocol }) => {
+      const client = new GatewayClient({
+        url: "ws://127.0.0.1:18789",
+        deviceIdentity: null,
+        ...options,
+      });
+
+      const { connect } = startClientAndConnect({ client });
+
+      expect(connect.params?.minProtocol).toBe(expectedMinProtocol);
+      expect(connect.params?.maxProtocol).toBe(expectedMaxProtocol);
+      client.stop();
+    },
+  );
+
+  it("signs device proof with the emitted node client mode", () => {
+    const signDevicePayload = vi.fn((_privateKeyPem: string, _payload: string) => "signature");
+    const client = createClientWithIdentity("device-node-mode", vi.fn(), {
+      role: "node",
+      mode: GATEWAY_CLIENT_MODES.NODE,
+      hostDeps: { signDevicePayload },
     });
 
     const { connect } = startClientAndConnect({ client });
+    const signedPayload = signDevicePayload.mock.calls[0]?.[1];
 
-    expect(connect.params?.minProtocol).toBe(MIN_CLIENT_PROTOCOL_VERSION);
-    expect(connect.params?.maxProtocol).toBe(PROTOCOL_VERSION);
+    expect(connect.params?.client?.mode).toBe(GATEWAY_CLIENT_MODES.NODE);
+    expect(signedPayload?.split("|")[3]).toBe(connect.params?.client?.mode);
     client.stop();
   });
 
