@@ -1,76 +1,89 @@
 export const GATEWAY_NODE_COMPAT_SCHEMA: "openclaw.gateway-node-compat/v1";
 
-export type GatewayNodeKind =
-  | "android"
-  | "ios"
-  | "linux"
-  | "macos"
-  | "watchos"
-  | "wearos"
-  | "windows";
+export type GatewayNodeKind = "android" | "ios" | "linux" | "macos" | "windows";
 
 export type GatewayNodeArchitecture = "arm64" | "x64";
 
-export type GatewayNodeConnectionMode = "direct" | "phone-proxy";
+export type GatewayNodeCompatDirection =
+  | "baseline-gateway-baseline-node"
+  | "baseline-gateway-candidate-node"
+  | "candidate-gateway-baseline-node"
+  | "candidate-gateway-candidate-node"
+  | "candidate-gateway-disjoint-node";
 
-export type GatewayNodeProtocolClientId =
-  | "node-host"
-  | "openclaw-android"
-  | "openclaw-ios"
-  | "openclaw-macos"
-  | "openclaw-watchos";
+export type GatewayNodeCompatActionsArtifact = {
+  id: number;
+  name: string;
+  digest: `sha256:${string}`;
+  sizeBytes: number;
+  runId: string;
+  runAttempt: number;
+};
 
-export type GatewayNodeCompatArtifact = {
+export type GatewayNodeCompatPackagedArtifact = {
   version: string;
   sourceSha: string;
-  artifactName: string;
-  artifactSha256: string;
+  name: string;
+  sha256: string;
+  actionsArtifact: GatewayNodeCompatActionsArtifact;
 };
 
-export type GatewayNodeCompatProxy = GatewayNodeCompatArtifact & {
-  kind: "android";
-  architecture: GatewayNodeArchitecture;
-  protocolClientId: "openclaw-android";
+export type GatewayNodeCompatInstalledRuntime = {
+  version: string;
+  sourceSha: string;
+  identitySha256: string;
 };
 
-type GatewayNodeCompatDirectNode = GatewayNodeCompatArtifact & {
+export type GatewayNodeCompatRuntimeBinding = {
+  packagedArtifact: GatewayNodeCompatPackagedArtifact;
+  installedRuntime: GatewayNodeCompatInstalledRuntime;
+};
+
+type GatewayNodeCompatNodeBase = GatewayNodeCompatRuntimeBinding & {
   architecture: GatewayNodeArchitecture;
-  connectionMode: "direct";
-  proxy?: never;
 };
 
 export type GatewayNodeCompatNode =
-  | (GatewayNodeCompatDirectNode & {
+  | (GatewayNodeCompatNodeBase & {
       kind: "android";
       protocolClientId: "openclaw-android";
     })
-  | (GatewayNodeCompatDirectNode & {
+  | (GatewayNodeCompatNodeBase & {
       kind: "ios";
       protocolClientId: "openclaw-ios";
     })
-  | (GatewayNodeCompatDirectNode & {
-      kind: "macos";
-      protocolClientId: "openclaw-macos";
-    })
-  | (GatewayNodeCompatDirectNode & {
-      kind: "watchos";
-      protocolClientId: "openclaw-watchos";
-    })
-  | (GatewayNodeCompatDirectNode & {
+  | (GatewayNodeCompatNodeBase & {
       kind: "linux";
       protocolClientId: "node-host";
     })
-  | (GatewayNodeCompatDirectNode & {
+  | (GatewayNodeCompatNodeBase & {
+      kind: "macos";
+      protocolClientId: "openclaw-macos";
+    })
+  | (GatewayNodeCompatNodeBase & {
       kind: "windows";
       protocolClientId: "node-host";
-    })
-  | (GatewayNodeCompatArtifact & {
-      kind: "wearos";
-      architecture: GatewayNodeArchitecture;
-      connectionMode: "phone-proxy";
-      protocolClientId: "openclaw-android";
-      proxy: GatewayNodeCompatProxy;
     });
+
+export type GatewayNodeCompatProtocol = {
+  gatewayProtocolVersion: number;
+  gatewayAcceptedNodeMin: number;
+  protocolClientAdvertisedMin: number;
+  protocolClientAdvertisedMax: number;
+  helloProtocol: number | null;
+};
+
+export type GatewayNodeCompatOperation = {
+  method: "node.invoke";
+  command: "system.which";
+  params: {
+    bins: string[];
+  };
+  ok: true;
+  result: {
+    bins: Record<string, string>;
+  };
+};
 
 export type GatewayNodeCompatProducer = {
   repository: string;
@@ -83,19 +96,24 @@ export type GatewayNodeCompatProducer = {
 
 type GatewayNodeCompatBase = {
   schema: typeof GATEWAY_NODE_COMPAT_SCHEMA;
-  gateway: GatewayNodeCompatArtifact;
+  caseId: string;
+  direction: GatewayNodeCompatDirection;
+  connection: {
+    transport: "gateway-websocket";
+    role: "node";
+    mode: "node";
+  };
+  gateway: GatewayNodeCompatRuntimeBinding;
   node: GatewayNodeCompatNode;
+  protocol: GatewayNodeCompatProtocol;
   producer: GatewayNodeCompatProducer;
 };
 
 export type GatewayNodeCompatPassedEvidence = GatewayNodeCompatBase & {
-  protocol: {
-    gatewayCurrent: number;
-    gatewayNodeMinimum: number;
-    protocolClientAdvertisedMin: number;
-    protocolClientAdvertisedMax: number;
+  protocol: GatewayNodeCompatProtocol & {
     helloProtocol: number;
   };
+  operation: GatewayNodeCompatOperation;
   result: {
     outcome: "passed";
     startedAt: string;
@@ -104,15 +122,12 @@ export type GatewayNodeCompatPassedEvidence = GatewayNodeCompatBase & {
 };
 
 export type GatewayNodeCompatMismatchEvidence = GatewayNodeCompatBase & {
-  protocol: {
-    gatewayCurrent: number;
-    gatewayNodeMinimum: number;
-    protocolClientAdvertisedMin: number;
-    protocolClientAdvertisedMax: number;
+  protocol: GatewayNodeCompatProtocol & {
     helloProtocol: null;
   };
+  operation: null;
   result: {
-    outcome: "expected-protocol-mismatch";
+    outcome: "protocol-mismatch";
     failureCode: "PROTOCOL_MISMATCH";
     failurePhase: "connect";
     startedAt: string;

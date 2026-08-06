@@ -20,26 +20,26 @@ export const GATEWAY_NODE_COMPAT_SCHEMA = "openclaw.gateway-node-compat/v1";
 const MAX_INPUT_BYTES = 64 * 1024;
 const SOURCE_SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
+const ACTIONS_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const POSITIVE_DECIMAL_PATTERN = /^[1-9][0-9]*$/u;
 const PATH_SEGMENT_PATTERN = /^[A-Za-z0-9_.-]+$/u;
+const CASE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
 
-const NODE_KINDS = new Set(["android", "ios", "linux", "macos", "watchos", "wearos", "windows"]);
+const NODE_KINDS = new Set(["android", "ios", "linux", "macos", "windows"]);
 const ARCHITECTURES = new Set(["arm64", "x64"]);
-const CONNECTION_MODES = new Set(["direct", "phone-proxy"]);
-const PROTOCOL_CLIENT_IDS = new Set([
-  "node-host",
-  "openclaw-android",
-  "openclaw-ios",
-  "openclaw-macos",
-  "openclaw-watchos",
+const DIRECTIONS = new Set([
+  "baseline-gateway-baseline-node",
+  "baseline-gateway-candidate-node",
+  "candidate-gateway-baseline-node",
+  "candidate-gateway-candidate-node",
+  "candidate-gateway-disjoint-node",
 ]);
-const OUTCOMES = new Set(["expected-protocol-mismatch", "passed"]);
-const DIRECT_TOPOLOGIES = new Map([
+const OUTCOMES = new Set(["passed", "protocol-mismatch"]);
+const NODE_CLIENT_IDS = new Map([
   ["android", "openclaw-android"],
   ["ios", "openclaw-ios"],
   ["linux", "node-host"],
   ["macos", "openclaw-macos"],
-  ["watchos", "openclaw-watchos"],
   ["windows", "node-host"],
 ]);
 
@@ -57,8 +57,8 @@ function requireObject(value, label) {
   return value;
 }
 
-function assertExactKeys(value, label, requiredKeys, optionalKeys = []) {
-  const allowedKeys = new Set([...requiredKeys, ...optionalKeys]);
+function assertExactKeys(value, label, requiredKeys) {
+  const allowedKeys = new Set(requiredKeys);
   for (const key of Object.keys(value)) {
     if (!allowedKeys.has(key)) {
       throw new Error(`${label}.${key} is not allowed`);
@@ -85,7 +85,7 @@ function requireString(value, label, maxLength) {
 }
 
 function requireEnum(value, label, allowedValues) {
-  const normalized = requireString(value, label, 64);
+  const normalized = requireString(value, label, 128);
   if (!allowedValues.has(normalized)) {
     throw new Error(`${label} is unsupported`);
   }
@@ -189,116 +189,102 @@ function assertInputSize(value) {
   }
 }
 
-function validateArtifact(value, label) {
+function validateActionsArtifact(value, label) {
   const artifact = requireObject(value, label);
-  assertExactKeys(artifact, label, ["version", "sourceSha", "artifactName", "artifactSha256"]);
-  requireString(artifact.version, `${label}.version`, 128);
-  requirePattern(artifact.sourceSha, `${label}.sourceSha`, SOURCE_SHA_PATTERN, 40);
-  requireArtifactName(artifact.artifactName, `${label}.artifactName`);
-  requirePattern(artifact.artifactSha256, `${label}.artifactSha256`, SHA256_PATTERN, 64);
+  assertExactKeys(artifact, label, ["id", "name", "digest", "sizeBytes", "runId", "runAttempt"]);
+  requirePositiveInteger(artifact.id, `${label}.id`);
+  requireArtifactName(artifact.name, `${label}.name`);
+  requirePattern(artifact.digest, `${label}.digest`, ACTIONS_DIGEST_PATTERN, 71);
+  requirePositiveInteger(artifact.sizeBytes, `${label}.sizeBytes`);
+  requirePattern(artifact.runId, `${label}.runId`, POSITIVE_DECIMAL_PATTERN, 32);
+  requirePositiveInteger(artifact.runAttempt, `${label}.runAttempt`);
 }
 
-function validateProxy(value) {
-  const proxy = requireObject(value, "node.proxy");
-  assertExactKeys(proxy, "node.proxy", [
-    "version",
-    "sourceSha",
-    "artifactName",
-    "artifactSha256",
-    "kind",
-    "architecture",
-    "protocolClientId",
-  ]);
-  validateArtifact(
-    {
-      version: proxy.version,
-      sourceSha: proxy.sourceSha,
-      artifactName: proxy.artifactName,
-      artifactSha256: proxy.artifactSha256,
-    },
-    "node.proxy",
-  );
-  if (proxy.kind !== "android") {
-    throw new Error("node.proxy.kind must be android");
+function validatePackagedArtifact(value, label) {
+  const artifact = requireObject(value, label);
+  assertExactKeys(artifact, label, ["version", "sourceSha", "name", "sha256", "actionsArtifact"]);
+  requireString(artifact.version, `${label}.version`, 128);
+  requirePattern(artifact.sourceSha, `${label}.sourceSha`, SOURCE_SHA_PATTERN, 40);
+  requireArtifactName(artifact.name, `${label}.name`);
+  requirePattern(artifact.sha256, `${label}.sha256`, SHA256_PATTERN, 64);
+  validateActionsArtifact(artifact.actionsArtifact, `${label}.actionsArtifact`);
+}
+
+function validateInstalledRuntime(value, label) {
+  const runtime = requireObject(value, label);
+  assertExactKeys(runtime, label, ["version", "sourceSha", "identitySha256"]);
+  requireString(runtime.version, `${label}.version`, 128);
+  requirePattern(runtime.sourceSha, `${label}.sourceSha`, SOURCE_SHA_PATTERN, 40);
+  requirePattern(runtime.identitySha256, `${label}.identitySha256`, SHA256_PATTERN, 64);
+}
+
+function validateRuntimeBinding(value, label) {
+  const subject = requireObject(value, label);
+  assertExactKeys(subject, label, ["packagedArtifact", "installedRuntime"]);
+  validatePackagedArtifact(subject.packagedArtifact, `${label}.packagedArtifact`);
+  validateInstalledRuntime(subject.installedRuntime, `${label}.installedRuntime`);
+  if (subject.installedRuntime.version !== subject.packagedArtifact.version) {
+    throw new Error(`${label}.installedRuntime.version must match packaged artifact version`);
   }
-  requireEnum(proxy.architecture, "node.proxy.architecture", ARCHITECTURES);
-  if (proxy.protocolClientId !== "openclaw-android") {
-    throw new Error("node.proxy.protocolClientId must be openclaw-android");
+  if (subject.installedRuntime.sourceSha !== subject.packagedArtifact.sourceSha) {
+    throw new Error(`${label}.installedRuntime.sourceSha must match packaged artifact sourceSha`);
   }
 }
 
 function validateNode(value) {
   const node = requireObject(value, "node");
-  assertExactKeys(
-    node,
-    "node",
-    [
-      "version",
-      "sourceSha",
-      "artifactName",
-      "artifactSha256",
-      "kind",
-      "architecture",
-      "connectionMode",
-      "protocolClientId",
-    ],
-    ["proxy"],
-  );
-  validateArtifact(
+  assertExactKeys(node, "node", [
+    "kind",
+    "architecture",
+    "protocolClientId",
+    "packagedArtifact",
+    "installedRuntime",
+  ]);
+  const kind = requireEnum(node.kind, "node.kind", NODE_KINDS);
+  requireEnum(node.architecture, "node.architecture", ARCHITECTURES);
+  const expectedClientId = NODE_CLIENT_IDS.get(kind);
+  if (node.protocolClientId !== expectedClientId) {
+    throw new Error(`${kind} nodes require protocol client ${expectedClientId}`);
+  }
+  validateRuntimeBinding(
     {
-      version: node.version,
-      sourceSha: node.sourceSha,
-      artifactName: node.artifactName,
-      artifactSha256: node.artifactSha256,
+      packagedArtifact: node.packagedArtifact,
+      installedRuntime: node.installedRuntime,
     },
     "node",
   );
-  const kind = requireEnum(node.kind, "node.kind", NODE_KINDS);
-  requireEnum(node.architecture, "node.architecture", ARCHITECTURES);
-  const connectionMode = requireEnum(node.connectionMode, "node.connectionMode", CONNECTION_MODES);
-  const protocolClientId = requireEnum(
-    node.protocolClientId,
-    "node.protocolClientId",
-    PROTOCOL_CLIENT_IDS,
-  );
+}
 
-  if (kind === "wearos") {
-    if (connectionMode !== "phone-proxy" || protocolClientId !== "openclaw-android") {
-      throw new Error(
-        "wearos nodes require phone-proxy topology with protocol client openclaw-android",
-      );
-    }
-    if (!Object.hasOwn(node, "proxy")) {
-      throw new Error("wearos phone-proxy topology requires node.proxy");
-    }
-    validateProxy(node.proxy);
-    return;
+function validateConnection(value) {
+  const connection = requireObject(value, "connection");
+  assertExactKeys(connection, "connection", ["transport", "role", "mode"]);
+  if (connection.transport !== "gateway-websocket") {
+    throw new Error("connection.transport must be gateway-websocket");
   }
-
-  const expectedClientId = DIRECT_TOPOLOGIES.get(kind);
-  if (connectionMode !== "direct" || protocolClientId !== expectedClientId) {
-    throw new Error(
-      `${kind} nodes require direct topology with protocol client ${expectedClientId}`,
-    );
+  if (connection.role !== "node") {
+    throw new Error("connection.role must be node");
   }
-  if (Object.hasOwn(node, "proxy")) {
-    throw new Error("direct node topology must not include node.proxy");
+  if (connection.mode !== "node") {
+    throw new Error("connection.mode must be node");
   }
 }
 
 function validateProtocol(value) {
   const protocol = requireObject(value, "protocol");
   assertExactKeys(protocol, "protocol", [
-    "gatewayCurrent",
-    "gatewayNodeMinimum",
+    "gatewayProtocolVersion",
+    "gatewayAcceptedNodeMin",
     "protocolClientAdvertisedMin",
     "protocolClientAdvertisedMax",
     "helloProtocol",
   ]);
-  const gatewayCurrent = requirePositiveInteger(protocol.gatewayCurrent, "protocol.gatewayCurrent");
-  const gatewayNodeMinimum = requirePositiveInteger(
-    protocol.gatewayNodeMinimum,
-    "protocol.gatewayNodeMinimum",
+  const gatewayProtocolVersion = requirePositiveInteger(
+    protocol.gatewayProtocolVersion,
+    "protocol.gatewayProtocolVersion",
+  );
+  const gatewayAcceptedNodeMin = requirePositiveInteger(
+    protocol.gatewayAcceptedNodeMin,
+    "protocol.gatewayAcceptedNodeMin",
   );
   const protocolClientAdvertisedMin = requirePositiveInteger(
     protocol.protocolClientAdvertisedMin,
@@ -308,8 +294,10 @@ function validateProtocol(value) {
     protocol.protocolClientAdvertisedMax,
     "protocol.protocolClientAdvertisedMax",
   );
-  if (gatewayNodeMinimum > gatewayCurrent) {
-    throw new Error("protocol.gatewayNodeMinimum must not exceed protocol.gatewayCurrent");
+  if (gatewayAcceptedNodeMin > gatewayProtocolVersion) {
+    throw new Error(
+      "protocol.gatewayAcceptedNodeMin must not exceed protocol.gatewayProtocolVersion",
+    );
   }
   if (protocolClientAdvertisedMin > protocolClientAdvertisedMax) {
     throw new Error(
@@ -319,33 +307,77 @@ function validateProtocol(value) {
   if (protocol.helloProtocol !== null) {
     requirePositiveInteger(protocol.helloProtocol, "protocol.helloProtocol");
   }
-  return {
-    gatewayCurrent,
-    gatewayNodeMinimum,
-    protocolClientAdvertisedMax,
-    protocolClientAdvertisedMin,
-  };
+  return { gatewayProtocolVersion };
+}
+
+function validateSystemWhichParams(value) {
+  const params = requireObject(value, "operation.params");
+  assertExactKeys(params, "operation.params", ["bins"]);
+  if (!Array.isArray(params.bins) || params.bins.length === 0 || params.bins.length > 32) {
+    throw new Error("operation.params.bins must contain 1 to 32 requested binaries");
+  }
+  const bins = new Set();
+  for (const [index, bin] of params.bins.entries()) {
+    const normalized = requirePathSegment(bin, `operation.params.bins.${index}`, 128);
+    if (bins.has(normalized)) {
+      throw new Error("operation.params.bins must not contain duplicates");
+    }
+    bins.add(normalized);
+  }
+  return bins;
+}
+
+function validateSystemWhichResult(value, requestedBins) {
+  const result = requireObject(value, "operation.result");
+  assertExactKeys(result, "operation.result", ["bins"]);
+  const bins = requireObject(result.bins, "operation.result.bins");
+  const entries = Object.entries(bins);
+  if (entries.length === 0 || entries.length > 32) {
+    throw new Error("operation.result.bins must contain 1 to 32 resolved binaries");
+  }
+  for (const [bin, resolvedPath] of entries) {
+    requirePathSegment(bin, `operation.result.bins.${bin}`, 128);
+    if (!requestedBins.has(bin)) {
+      throw new Error(`operation.result.bins.${bin} was not requested`);
+    }
+    requireString(resolvedPath, `operation.result.bins.${bin}`, 4096);
+  }
+}
+
+function validateOperation(value) {
+  const operation = requireObject(value, "operation");
+  assertExactKeys(operation, "operation", ["method", "command", "params", "ok", "result"]);
+  if (operation.method !== "node.invoke") {
+    throw new Error("operation.method must be node.invoke");
+  }
+  if (operation.command !== "system.which") {
+    throw new Error("operation.command must be system.which");
+  }
+  if (operation.ok !== true) {
+    throw new Error("operation.ok must be true");
+  }
+  const requestedBins = validateSystemWhichParams(operation.params);
+  validateSystemWhichResult(operation.result, requestedBins);
 }
 
 function validateResult(value) {
   const result = requireObject(value, "result");
-  assertExactKeys(
-    result,
-    "result",
-    ["outcome", "startedAt", "completedAt"],
-    ["failureCode", "failurePhase"],
-  );
   const outcome = requireEnum(result.outcome, "result.outcome", OUTCOMES);
+  if (outcome === "passed") {
+    assertExactKeys(result, "result", ["outcome", "startedAt", "completedAt"]);
+  } else {
+    assertExactKeys(result, "result", [
+      "outcome",
+      "failureCode",
+      "failurePhase",
+      "startedAt",
+      "completedAt",
+    ]);
+  }
   const startedAt = requireCanonicalTimestamp(result.startedAt, "result.startedAt");
   const completedAt = requireCanonicalTimestamp(result.completedAt, "result.completedAt");
   if (completedAt < startedAt) {
     throw new Error("result.completedAt must not precede result.startedAt");
-  }
-  if (result.failureCode !== undefined) {
-    requireString(result.failureCode, "result.failureCode", 64);
-  }
-  if (result.failurePhase !== undefined) {
-    requireString(result.failurePhase, "result.failurePhase", 64);
   }
   return outcome;
 }
@@ -369,57 +401,57 @@ function validateProducer(value) {
 }
 
 function validateOutcomeCoupling(evidence, protocol, outcome) {
-  const rangesOverlap =
-    protocol.protocolClientAdvertisedMin <= protocol.gatewayCurrent &&
-    protocol.protocolClientAdvertisedMax >= protocol.gatewayNodeMinimum;
   if (outcome === "passed") {
-    if (!rangesOverlap) {
-      throw new Error("passed evidence requires overlapping gateway and node protocol ranges");
+    if (evidence.protocol.helloProtocol !== protocol.gatewayProtocolVersion) {
+      throw new Error("passed evidence requires helloProtocol to equal gatewayProtocolVersion");
     }
-    if (evidence.protocol.helloProtocol !== protocol.gatewayCurrent) {
-      throw new Error("passed evidence requires helloProtocol to equal gatewayCurrent");
-    }
-    if (evidence.result.failureCode !== undefined || evidence.result.failurePhase !== undefined) {
-      throw new Error("passed evidence must not include failure fields");
-    }
+    validateOperation(evidence.operation);
     return;
   }
 
-  if (rangesOverlap) {
-    throw new Error("expected-protocol-mismatch evidence requires disjoint protocol ranges");
-  }
   if (evidence.protocol.helloProtocol !== null) {
-    throw new Error("expected-protocol-mismatch evidence requires helloProtocol to be null");
+    throw new Error("protocol-mismatch evidence requires helloProtocol to be null");
+  }
+  if (evidence.operation !== null) {
+    throw new Error("protocol-mismatch evidence requires operation to be null");
   }
   if (evidence.result.failureCode !== "PROTOCOL_MISMATCH") {
-    throw new Error("expected-protocol-mismatch evidence requires failureCode PROTOCOL_MISMATCH");
+    throw new Error("protocol-mismatch evidence requires failureCode PROTOCOL_MISMATCH");
   }
   if (evidence.result.failurePhase !== "connect") {
-    throw new Error("expected-protocol-mismatch evidence requires failurePhase connect");
+    throw new Error("protocol-mismatch evidence requires failurePhase connect");
   }
 }
 
 /**
- * Validates one immutable Gateway/node compatibility matrix result.
+ * Validates one immutable, observed Gateway WebSocket node compatibility result.
  *
- * The Gateway hello protocol and the node's compatibility range are separate:
- * a legacy v3 node can receive a v4 hello while remaining constrained to v3.
+ * Artifact/run provenance is recorded here and independently verified by the
+ * release aggregator. Outcome authority comes from the observed invoke or
+ * structured connect rejection, never inferred protocol-range overlap.
  */
 export function validateGatewayNodeCompatEvidence(value) {
   assertInputSize(value);
   const evidence = requireObject(value, "gateway-node compatibility evidence");
   assertExactKeys(evidence, "gateway-node compatibility evidence", [
     "schema",
+    "caseId",
+    "direction",
+    "connection",
     "gateway",
     "node",
     "protocol",
+    "operation",
     "result",
     "producer",
   ]);
   if (evidence.schema !== GATEWAY_NODE_COMPAT_SCHEMA) {
     throw new Error("gateway-node compatibility evidence schema is unsupported");
   }
-  validateArtifact(evidence.gateway, "gateway");
+  requirePattern(evidence.caseId, "caseId", CASE_ID_PATTERN, 128);
+  requireEnum(evidence.direction, "direction", DIRECTIONS);
+  validateConnection(evidence.connection);
+  validateRuntimeBinding(evidence.gateway, "gateway");
   validateNode(evidence.node);
   const protocol = validateProtocol(evidence.protocol);
   const outcome = validateResult(evidence.result);
